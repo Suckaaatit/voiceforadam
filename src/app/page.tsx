@@ -25,6 +25,7 @@ function getStepIndex(status: string): number {
 export default function VoiceGeneratorPage() {
   const [text, setText] = useState("");
   const [firstName, setFirstName] = useState("");
+  const [namePronunciation, setNamePronunciation] = useState("");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -53,7 +54,11 @@ export default function VoiceGeneratorPage() {
       const res = await fetch("/api/generate-voice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, first_name: firstName }),
+        body: JSON.stringify({
+          text,
+          first_name: firstName,
+          name_pronunciation: namePronunciation || "",
+        }),
       });
 
       if (!res.ok) {
@@ -337,6 +342,18 @@ export default function VoiceGeneratorPage() {
               placeholder="e.g. John"
               className="w-full rounded-lg border border-zinc-800 bg-zinc-950/50 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-600 transition-colors focus:border-zinc-700 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
             />
+            <div className="mt-2">
+              <input
+                type="text"
+                value={namePronunciation}
+                onChange={(e) => setNamePronunciation(e.target.value)}
+                placeholder="Pronunciation hint (e.g. Ah-kash)"
+                className="w-full rounded-lg border border-zinc-800/50 bg-zinc-950/30 px-3.5 py-2 text-xs text-zinc-400 placeholder-zinc-700 transition-colors focus:border-zinc-700 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
+              />
+              <p className="mt-1 text-[11px] text-zinc-600">
+                Optional — type how the name sounds if the AI mispronounces it
+              </p>
+            </div>
           </div>
 
           {/* Divider */}

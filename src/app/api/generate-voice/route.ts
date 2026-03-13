@@ -7,7 +7,7 @@ export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
-    const { text, first_name } = await req.json();
+    const { text, first_name, name_pronunciation } = await req.json();
 
     if (!text || typeof text !== 'string' || !text.trim()) {
       return NextResponse.json({ error: 'Text is required' }, { status: 400 });
@@ -20,7 +20,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const processedText = text.trim().replace(/\{first_name\}/gi, first_name || 'there');
+    // For subtitles: use the real name
+    const subtitleText = text.trim().replace(/\{first_name\}/gi, first_name || 'there');
+    // For TTS: use the pronunciation hint if provided, otherwise use the real name
+    const ttsName = (name_pronunciation && name_pronunciation.trim()) ? name_pronunciation.trim() : (first_name || 'there');
+    const processedText = text.trim().replace(/\{first_name\}/gi, ttsName);
 
     const ttsResponse = await fetch('https://api.fish.audio/v1/tts', {
       method: 'POST',
@@ -45,24 +49,25 @@ export async function POST(req: NextRequest) {
 
     const audioBuffer = Buffer.from(await ttsResponse.arrayBuffer());
 
-    // Generate subtitle chunks (8 words per chunk, estimate ~0.4s per word)
-    const words = processedText.split(' ');
+    // Generate subtitle chunks using the REAL name (not pronunciation)
+    const subWords = subtitleText.split(' ');
+    const ttsWords = processedText.split(' ');
     const chunkSize = 8;
     const msPerWord = 400;
     const subtitles: Array<{ text: string; start: number; end: number }> = [];
 
-    for (let i = 0; i < words.length; i += chunkSize) {
-      const chunk = words.slice(i, i + chunkSize).join(' ');
+    for (let i = 0; i < subWords.length; i += chunkSize) {
+      const chunk = subWords.slice(i, i + chunkSize).join(' ');
       const startMs = i * msPerWord;
-      const endMs = Math.min((i + chunkSize) * msPerWord, words.length * msPerWord);
+      const endMs = Math.min((i + chunkSize) * msPerWord, ttsWords.length * msPerWord);
       subtitles.push({ text: chunk, start: startMs / 1000, end: endMs / 1000 });
     }
 
     return NextResponse.json({
       audio: audioBuffer.toString('base64'),
       subtitles,
-      duration: (words.length * msPerWord) / 1000,
-      text: processedText,
+      duration: (ttsWords.length * msPerWord) / 1000,
+      text: subtitleText,
     });
   } catch (err: unknown) {
     console.error('Generate voice error:', err);
