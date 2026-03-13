@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
       headers: {
         'Authorization': `Bearer ${FISH_API_KEY}`,
         'Content-Type': 'application/json',
-        'model': 's1',
+        'model': 'speech-1.5',
       },
       body: JSON.stringify({
         text: processedText,
