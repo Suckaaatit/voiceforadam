@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #09090b;
+  --bg-card: rgba(24, 24, 27, 0.8);
+  --bg-input: #18181b;
+  --border-subtle: rgba(63, 63, 70, 0.5);
+  --border-focus: #3b82f6;
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --success: #22c55e;
+  --danger: #ef4444;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #27272a transparent;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Toggle switch */
+.toggle-track {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: #27272a;
+  border-radius: 10px;
+  transition: background 0.2s ease;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #71717a;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+}
+
+.toggle-track[data-checked="true"] {
+  background: var(--accent);
+}
+
+.toggle-track[data-checked="true"]::after {
+  left: 18px;
+  background: white;
+}
+
+/* Progress bar animation */
+@keyframes progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+.progress-bar {
+  animation: progress-indeterminate 1.5s ease-in-out infinite;
+}
+
+/* Subtle glow for active elements */
+.glow-blue {
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3), 0 0 20px -5px rgba(59, 130, 246, 0.2);
+}
