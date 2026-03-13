@@ -27,11 +27,14 @@ export default function VoiceGeneratorPage() {
   const [firstName, setFirstName] = useState("");
   const [namePronunciation, setNamePronunciation] = useState("");
   const [loading, setLoading] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const [status, setStatus] = useState("");
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [includeSubtitles, setIncludeSubtitles] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const previewAudioRef = useRef<HTMLAudioElement>(null);
 
   const currentStep = getStepIndex(status);
   const charCount = text.length;
@@ -42,6 +45,52 @@ export default function VoiceGeneratorPage() {
       if (videoUrl) URL.revokeObjectURL(videoUrl);
     };
   }, [videoUrl]);
+
+  const handlePreviewAudio = async () => {
+    if (!text.trim()) return;
+    setPreviewing(true);
+    setError(null);
+    if (previewAudioUrl) {
+      URL.revokeObjectURL(previewAudioUrl);
+      setPreviewAudioUrl(null);
+    }
+
+    try {
+      const res = await fetch("/api/generate-voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          first_name: firstName,
+          name_pronunciation: namePronunciation || "",
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Voice generation failed");
+      }
+
+      const data = await res.json();
+      const audioBytes = Uint8Array.from(atob(data.audio), (c) =>
+        c.charCodeAt(0)
+      );
+      const audioBlob = new Blob([audioBytes], { type: "audio/mpeg" });
+      const url = URL.createObjectURL(audioBlob);
+      setPreviewAudioUrl(url);
+
+      // Auto-play the preview
+      setTimeout(() => {
+        previewAudioRef.current?.play();
+      }, 100);
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong";
+      setError(message);
+    } finally {
+      setPreviewing(false);
+    }
+  };
 
   const handleGenerate = async () => {
     if (!text.trim()) return;
@@ -530,13 +579,92 @@ export default function VoiceGeneratorPage() {
             </div>
           )}
 
-          {/* Generate button */}
-          <div className="p-5 pt-0">
+          {/* Audio preview */}
+          {previewAudioUrl && (
+            <div className="mx-5 mb-4">
+              <div className="flex items-center gap-3 rounded-lg border border-zinc-800/60 bg-zinc-950/50 p-3">
+                <svg
+                  className="h-4 w-4 flex-shrink-0 text-emerald-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"
+                  />
+                </svg>
+                <audio
+                  ref={previewAudioRef}
+                  src={previewAudioUrl}
+                  controls
+                  className="h-8 w-full [&::-webkit-media-controls-panel]:bg-zinc-800"
+                />
+              </div>
+              <p className="mt-1.5 text-[11px] text-zinc-600">
+                Name sounds wrong? Adjust the pronunciation hint above and preview again
+              </p>
+            </div>
+          )}
+
+          {/* Buttons */}
+          <div className="flex gap-3 p-5 pt-0">
+            {/* Preview Audio button */}
+            <button
+              onClick={handlePreviewAudio}
+              disabled={loading || previewing || !text.trim()}
+              className={`flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium transition-all ${
+                loading || previewing || !text.trim()
+                  ? "cursor-not-allowed bg-zinc-800 text-zinc-600"
+                  : "border border-zinc-700/60 text-zinc-300 hover:border-zinc-600 hover:text-zinc-200 active:scale-[0.98]"
+              }`}
+            >
+              {previewing ? (
+                <svg
+                  className="h-4 w-4 animate-spin"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                  />
+                </svg>
+              ) : (
+                <svg
+                  className="h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z"
+                  />
+                </svg>
+              )}
+              {previewing ? "..." : "Preview"}
+            </button>
+
+            {/* Generate button */}
             <button
               onClick={handleGenerate}
-              disabled={loading || !text.trim()}
-              className={`group relative w-full overflow-hidden rounded-xl px-4 py-3 text-sm font-medium transition-all ${
-                loading || !text.trim()
+              disabled={loading || previewing || !text.trim()}
+              className={`group relative flex-1 overflow-hidden rounded-xl px-4 py-3 text-sm font-medium transition-all ${
+                loading || previewing || !text.trim()
                   ? "cursor-not-allowed bg-zinc-800 text-zinc-600"
                   : "bg-blue-600 text-white shadow-lg shadow-blue-600/20 hover:bg-blue-500 hover:shadow-blue-500/25 active:scale-[0.98]"
               }`}

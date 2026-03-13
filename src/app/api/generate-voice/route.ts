@@ -23,7 +23,9 @@ export async function POST(req: NextRequest) {
     // For subtitles: use the real name
     const subtitleText = text.trim().replace(/\{first_name\}/gi, first_name || 'there');
     // For TTS: use the pronunciation hint if provided, otherwise use the real name
-    const ttsName = (name_pronunciation && name_pronunciation.trim()) ? name_pronunciation.trim() : (first_name || 'there');
+    // Convert hyphens to spaces so TTS reads syllables naturally (e.g. "Deh-ni-sa" → "Deh ni sa")
+    const rawPronunciation = (name_pronunciation && name_pronunciation.trim()) ? name_pronunciation.trim() : '';
+    const ttsName = rawPronunciation ? rawPronunciation.replace(/-/g, ' ') : (first_name || 'there');
     const processedText = text.trim().replace(/\{first_name\}/gi, ttsName);
 
     const ttsResponse = await fetch('https://api.fish.audio/v1/tts', {
