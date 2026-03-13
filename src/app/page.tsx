@@ -105,19 +105,30 @@ export default function VoiceGeneratorPage() {
     await ffmpeg.writeFile("input_video.webm", await fetchFile(videoBlob));
     await ffmpeg.writeFile("input_audio.mp3", await fetchFile(audioBlob));
 
+    // Step 1: Decode MP3 to clean WAV (avoids MP3→AAC transcode artifacts)
+    await ffmpeg.exec([
+      "-i", "input_audio.mp3",
+      "-ac", "2",
+      "-ar", "44100",
+      "-f", "wav",
+      "clean_audio.wav",
+    ]);
+
+    // Step 2: Mux video + clean audio into final MP4
     await ffmpeg.exec([
       "-i", "input_video.webm",
-      "-i", "input_audio.mp3",
+      "-i", "clean_audio.wav",
       "-c:v", "libx264",
+      "-profile:v", "baseline",
+      "-level", "3.1",
       "-preset", "medium",
       "-crf", "18",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
+      "-profile:a", "aac_low",
       "-b:a", "192k",
       "-ar", "44100",
       "-ac", "2",
-      "-af", "aresample=async=1",
-      "-profile:a", "aac_low",
       "-map", "0:v:0",
       "-map", "1:a:0",
       "-shortest",
@@ -141,14 +152,23 @@ export default function VoiceGeneratorPage() {
     canvas.height = 1080;
     const ctx = canvas.getContext("2d")!;
 
-    // Get audio duration without AudioContext — keeps audio pristine
+    // Get audio duration robustly — handles blob URLs that return Infinity
     const audioUrl = URL.createObjectURL(audioBlob);
     const audio = new Audio(audioUrl);
-    await new Promise<void>((resolve) => {
-      audio.onloadedmetadata = () => resolve();
+    const audioDuration = await new Promise<number>((resolve) => {
+      audio.addEventListener("loadedmetadata", () => {
+        if (audio.duration && isFinite(audio.duration)) {
+          resolve(audio.duration);
+        } else {
+          // Fallback: seek to end to force duration calculation
+          audio.currentTime = 1e10;
+          audio.addEventListener("seeked", () => {
+            resolve(audio.duration);
+          }, { once: true });
+        }
+      }, { once: true });
       audio.load();
     });
-    const audioDuration = audio.duration;
 
     // Record VIDEO ONLY from canvas — no audio track at all
     // The original MP3 will be muxed in later via FFmpeg (zero quality loss)
