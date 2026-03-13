@@ -146,22 +146,6 @@ export default function VoiceGeneratorPage() {
     canvas.height = 1080;
     const ctx = canvas.getContext("2d")!;
 
-    let logoImg: HTMLImageElement | null = null;
-    try {
-      logoImg = new Image();
-      logoImg.crossOrigin = "anonymous";
-      await new Promise<void>((resolve) => {
-        logoImg!.onload = () => resolve();
-        logoImg!.onerror = () => {
-          logoImg = null;
-          resolve();
-        };
-        logoImg!.src = "/godscrew-logo.png";
-      });
-    } catch {
-      logoImg = null;
-    }
-
     const audioUrl = URL.createObjectURL(audioBlob);
     const audio = new Audio(audioUrl);
     await new Promise<void>((resolve) => {
@@ -173,8 +157,9 @@ export default function VoiceGeneratorPage() {
     const audioCtx = new AudioContext();
     const source = audioCtx.createMediaElementSource(audio);
     const dest = audioCtx.createMediaStreamDestination();
+    // Only route audio to the recording stream — NOT to speakers
+    // Playing through both causes feedback beeps/artifacts
     source.connect(dest);
-    source.connect(audioCtx.destination);
 
     const combined = new MediaStream([
       ...stream.getTracks(),
@@ -224,49 +209,9 @@ export default function VoiceGeneratorPage() {
       const drawFrame = () => {
         const elapsed = (performance.now() - startTime) / 1000;
 
-        ctx.fillStyle = "#1A1A2E";
+        // Pitch black background — nothing else
+        ctx.fillStyle = "#000000";
         ctx.fillRect(0, 0, 1080, 1080);
-
-        // Draw original logo as-is (with white background)
-        if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
-          const logoW = logoImg.naturalWidth * 2;
-          const logoH = logoImg.naturalHeight * 2;
-          ctx.drawImage(
-            logoImg,
-            (1080 - logoW) / 2,
-            200,
-            logoW,
-            logoH
-          );
-
-          // Company name — spaced below logo
-          ctx.fillStyle = "#ffffff";
-          ctx.font = "bold 42px Arial, sans-serif";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText("God's Cleaning Crew", 540, 200 + logoH + 60);
-        }
-
-        // Waveform bars — spaced well below name
-        const barCount = 20;
-        const barWidth = 16;
-        const barGap = 8;
-        const totalBarWidth = barCount * (barWidth + barGap);
-        const barStartX = (1080 - totalBarWidth) / 2;
-        const barY = 700;
-
-        for (let i = 0; i < barCount; i++) {
-          const phase = elapsed * 3 + i * 0.4;
-          const height = 10 + Math.abs(Math.sin(phase)) * 40;
-          const alpha = 0.4 + Math.abs(Math.sin(phase)) * 0.6;
-          ctx.fillStyle = `rgba(59, 130, 246, ${alpha})`;
-          ctx.fillRect(
-            barStartX + i * (barWidth + barGap),
-            barY - height / 2,
-            barWidth,
-            height
-          );
-        }
 
         if (showSubs) {
           const currentSub = subtitles.find(
