@@ -32,6 +32,8 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         text: processedText,
         reference_id: ADAM_VOICE_ID,
+        format: 'mp3',
+        mp3_bitrate: 192,
       }),
     });
 

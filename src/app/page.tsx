@@ -114,11 +114,17 @@ export default function VoiceGeneratorPage() {
       "-c:v",
       "libx264",
       "-preset",
-      "ultrafast",
+      "medium",
       "-crf",
-      "23",
+      "18",
+      "-pix_fmt",
+      "yuv420p",
       "-c:a",
       "aac",
+      "-b:a",
+      "192k",
+      "-ar",
+      "44100",
       "-movflags",
       "+faststart",
       "output.mp4",
@@ -193,7 +199,10 @@ export default function VoiceGeneratorPage() {
       mimeType = "video/webm";
     }
 
-    const recorder = new MediaRecorder(combined, { mimeType });
+    const recorder = new MediaRecorder(combined, {
+      mimeType,
+      videoBitsPerSecond: 8_000_000,
+    });
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => {
       if (e.data.size > 0) chunks.push(e.data);
@@ -203,6 +212,7 @@ export default function VoiceGeneratorPage() {
       recorder.onstop = () => {
         const blob = new Blob(chunks, { type: mimeType });
         URL.revokeObjectURL(audioUrl);
+        audioCtx.close();
         resolve({ blob, isNativeMp4 });
       };
 
@@ -217,31 +227,33 @@ export default function VoiceGeneratorPage() {
         ctx.fillStyle = "#1A1A2E";
         ctx.fillRect(0, 0, 1080, 1080);
 
+        // Draw original logo as-is (with white background)
         if (logoImg && logoImg.complete && logoImg.naturalWidth > 0) {
-          const logoW = 300;
-          const logoH =
-            (logoImg.naturalHeight / logoImg.naturalWidth) * logoW;
+          const logoW = logoImg.naturalWidth * 2;
+          const logoH = logoImg.naturalHeight * 2;
           ctx.drawImage(
             logoImg,
             (1080 - logoW) / 2,
-            (1080 - logoH) / 2 - 120,
+            200,
             logoW,
             logoH
           );
-        } else {
+
+          // Company name — spaced below logo
           ctx.fillStyle = "#ffffff";
-          ctx.font = "bold 48px Arial, sans-serif";
+          ctx.font = "bold 42px Arial, sans-serif";
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          ctx.fillText("God's Cleaning Crew", 540, 400);
+          ctx.fillText("God's Cleaning Crew", 540, 200 + logoH + 60);
         }
 
+        // Waveform bars — spaced well below name
         const barCount = 20;
         const barWidth = 16;
         const barGap = 8;
         const totalBarWidth = barCount * (barWidth + barGap);
         const barStartX = (1080 - totalBarWidth) / 2;
-        const barY = 580;
+        const barY = 700;
 
         for (let i = 0; i < barCount; i++) {
           const phase = elapsed * 3 + i * 0.4;
@@ -349,27 +361,15 @@ export default function VoiceGeneratorPage() {
 
       <div className="relative mx-auto max-w-xl px-5 py-12 sm:py-16">
         {/* Header */}
-        <header className="mb-10">
-          <div className="flex items-center justify-center gap-3 mb-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600/10 ring-1 ring-blue-500/20">
-              <svg
-                className="h-5 w-5 text-blue-400"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
-                />
-              </svg>
-            </div>
-            <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
-              Voice Generator
-            </h1>
-          </div>
+        <header className="mb-10 flex flex-col items-center">
+          <img
+            src="/godscrew-logo.png"
+            alt="God's Cleaning Crew"
+            className="h-16 w-auto mb-4"
+          />
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-100 mb-1">
+            Voice Generator
+          </h1>
           <p className="text-center text-sm text-zinc-500">
             Create personalized AI voice videos in seconds
           </p>
