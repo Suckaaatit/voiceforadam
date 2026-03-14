@@ -10,15 +10,13 @@ interface SubtitleChunk {
 const STEPS = [
   "Generating voice",
   "Creating video",
-  "Converting to MP4",
   "Done",
 ] as const;
 
 function getStepIndex(status: string): number {
   if (status.startsWith("Generating")) return 0;
   if (status.startsWith("Creating")) return 1;
-  if (status.startsWith("Converting")) return 2;
-  if (status === "Done!") return 3;
+  if (status === "Done!") return 2;
   return -1;
 }
 
@@ -123,15 +121,11 @@ export default function VoiceGeneratorPage() {
       );
       const audioBlob = new Blob([audioBytes], { type: "audio/mpeg" });
 
-      const { videoBlob, audioBlob: originalAudio } =
-        await createVideoWithSubtitles(
-          audioBlob,
-          data.subtitles,
-          includeSubtitles
-        );
-
-      setStatus("Converting to MP4...");
-      const finalBlob = await muxVideoAndAudio(videoBlob, originalAudio);
+      const finalBlob = await createVideo(
+        audioBlob,
+        data.subtitles,
+        includeSubtitles
+      );
 
       const url = URL.createObjectURL(finalBlob);
       setVideoUrl(url);
@@ -146,88 +140,74 @@ export default function VoiceGeneratorPage() {
     }
   };
 
-  const muxVideoAndAudio = async (
-    videoBlob: Blob,
-    audioBlob: Blob
-  ): Promise<Blob> => {
-    const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-    const { fetchFile } = await import("@ffmpeg/util");
-
-    const ffmpeg = new FFmpeg();
-    await ffmpeg.load();
-
-    await ffmpeg.writeFile("input_video.webm", await fetchFile(videoBlob));
-    await ffmpeg.writeFile("input_audio.mp3", await fetchFile(audioBlob));
-
-    // Mux video + audio into universally compatible MP4
-    await ffmpeg.exec([
-      "-i", "input_video.webm",
-      "-i", "input_audio.mp3",
-      "-c:v", "libx264",
-      "-profile:v", "baseline",
-      "-level", "3.1",
-      "-preset", "ultrafast",
-      "-crf", "20",
-      "-pix_fmt", "yuv420p",
-      "-c:a", "aac",
-      "-b:a", "192k",
-      "-ar", "44100",
-      "-ac", "2",
-      "-map", "0:v:0",
-      "-map", "1:a:0",
-      "-shortest",
-      "-movflags", "+faststart",
-      "output.mp4",
-    ]);
-
-    const data = await ffmpeg.readFile("output.mp4");
-    return new Blob([new Uint8Array(data as Uint8Array)], {
-      type: "video/mp4",
-    });
-  };
-
-  const createVideoWithSubtitles = async (
+  const createVideo = async (
     audioBlob: Blob,
     subtitles: SubtitleChunk[],
     showSubs: boolean
-  ): Promise<{ videoBlob: Blob; audioBlob: Blob }> => {
+  ): Promise<Blob> => {
     const canvas = document.createElement("canvas");
     canvas.width = 1080;
     canvas.height = 1080;
     const ctx = canvas.getContext("2d")!;
 
-    // Get audio duration robustly — handles blob URLs that return Infinity
+    // Get audio duration robustly
     const audioUrl = URL.createObjectURL(audioBlob);
     const audio = new Audio(audioUrl);
     const audioDuration = await new Promise<number>((resolve) => {
-      audio.addEventListener("loadedmetadata", () => {
-        if (audio.duration && isFinite(audio.duration)) {
-          resolve(audio.duration);
-        } else {
-          // Fallback: seek to end to force duration calculation
-          audio.currentTime = 1e10;
-          audio.addEventListener("seeked", () => {
+      audio.addEventListener(
+        "loadedmetadata",
+        () => {
+          if (audio.duration && isFinite(audio.duration)) {
             resolve(audio.duration);
-          }, { once: true });
-        }
-      }, { once: true });
+          } else {
+            audio.currentTime = 1e10;
+            audio.addEventListener(
+              "seeked",
+              () => resolve(audio.duration),
+              { once: true }
+            );
+          }
+        },
+        { once: true }
+      );
       audio.load();
     });
 
-    // Record VIDEO ONLY from canvas — no audio track at all
-    // The original MP3 will be muxed in later via FFmpeg (zero quality loss)
-    const stream = canvas.captureStream(30);
+    // Reset audio to start
+    audio.currentTime = 0;
 
+    // Set up AudioContext to route audio INTO the recording (not speakers)
+    const audioCtx = new AudioContext();
+    const source = audioCtx.createMediaElementSource(audio);
+    const dest = audioCtx.createMediaStreamDestination();
+    source.connect(dest);
+    // DO NOT connect to audioCtx.destination — no speaker output = no beeps
+
+    // Combine canvas video stream + audio stream
+    const videoStream = canvas.captureStream(30);
+    const combined = new MediaStream([
+      ...videoStream.getTracks(),
+      ...dest.stream.getTracks(),
+    ]);
+
+    // Pick best available format — prefer MP4 (native on modern Chrome)
     let mimeType = "";
-    if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9")) {
-      mimeType = "video/webm;codecs=vp9";
-    } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8")) {
-      mimeType = "video/webm;codecs=vp8";
+    let fileExt = "webm";
+    if (MediaRecorder.isTypeSupported("video/mp4;codecs=avc1.42E01E,mp4a.40.2")) {
+      mimeType = "video/mp4;codecs=avc1.42E01E,mp4a.40.2";
+      fileExt = "mp4";
+    } else if (MediaRecorder.isTypeSupported("video/mp4")) {
+      mimeType = "video/mp4";
+      fileExt = "mp4";
+    } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")) {
+      mimeType = "video/webm;codecs=vp9,opus";
+    } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")) {
+      mimeType = "video/webm;codecs=vp8,opus";
     } else {
       mimeType = "video/webm";
     }
 
-    const recorder = new MediaRecorder(stream, {
+    const recorder = new MediaRecorder(combined, {
       mimeType,
       videoBitsPerSecond: 8_000_000,
     });
@@ -238,12 +218,14 @@ export default function VoiceGeneratorPage() {
 
     return new Promise((resolve) => {
       recorder.onstop = () => {
-        const videoBlob = new Blob(chunks, { type: mimeType });
+        const blob = new Blob(chunks, { type: mimeType });
         URL.revokeObjectURL(audioUrl);
-        resolve({ videoBlob, audioBlob });
+        audioCtx.close();
+        resolve(blob);
       };
 
-      recorder.start();
+      recorder.start(100);
+      audio.play();
       const startTime = performance.now();
 
       const drawFrame = () => {
@@ -794,15 +776,6 @@ export default function VoiceGeneratorPage() {
           <span className="flex items-center gap-1.5">
             <span className="flex h-5 w-5 items-center justify-center rounded-md bg-zinc-800/80 text-[10px] font-semibold text-zinc-500">
               3
-            </span>
-            Preview
-          </span>
-          <svg className="h-3 w-3 text-zinc-700" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-          </svg>
-          <span className="flex items-center gap-1.5">
-            <span className="flex h-5 w-5 items-center justify-center rounded-md bg-zinc-800/80 text-[10px] font-semibold text-zinc-500">
-              4
             </span>
             Download
           </span>
