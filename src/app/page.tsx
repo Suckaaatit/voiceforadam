@@ -159,27 +159,17 @@ export default function VoiceGeneratorPage() {
     await ffmpeg.writeFile("input_video.webm", await fetchFile(videoBlob));
     await ffmpeg.writeFile("input_audio.mp3", await fetchFile(audioBlob));
 
-    // Step 1: Decode MP3 to clean WAV (avoids MP3→AAC transcode artifacts)
-    await ffmpeg.exec([
-      "-i", "input_audio.mp3",
-      "-ac", "2",
-      "-ar", "44100",
-      "-f", "wav",
-      "clean_audio.wav",
-    ]);
-
-    // Step 2: Mux video + clean audio into final MP4
+    // Mux video + audio into universally compatible MP4
     await ffmpeg.exec([
       "-i", "input_video.webm",
-      "-i", "clean_audio.wav",
+      "-i", "input_audio.mp3",
       "-c:v", "libx264",
       "-profile:v", "baseline",
       "-level", "3.1",
-      "-preset", "medium",
-      "-crf", "18",
+      "-preset", "ultrafast",
+      "-crf", "20",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
-      "-profile:a", "aac_low",
       "-b:a", "192k",
       "-ar", "44100",
       "-ac", "2",
