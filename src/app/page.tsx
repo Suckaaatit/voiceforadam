@@ -173,6 +173,20 @@ export default function VoiceGeneratorPage() {
       audio.load();
     });
 
+    // Rescale subtitle timings to match actual audio duration
+    // Server estimates 400ms/word but real TTS pacing varies
+    if (subtitles.length > 0) {
+      const lastSub = subtitles[subtitles.length - 1];
+      const estimatedDuration = lastSub.end;
+      if (estimatedDuration > 0 && audioDuration > 0) {
+        const scale = audioDuration / estimatedDuration;
+        for (const sub of subtitles) {
+          sub.start *= scale;
+          sub.end *= scale;
+        }
+      }
+    }
+
     // Reset audio to start
     audio.currentTime = 0;
 
