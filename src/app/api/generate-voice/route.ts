@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
         text: processedText,
         reference_id: ADAM_VOICE_ID,
         format: 'mp3',
-        mp3_bitrate: 192,
+        mp3_bitrate: 320,
       }),
     });
 
@@ -52,23 +52,35 @@ export async function POST(req: NextRequest) {
     const audioBuffer = Buffer.from(await ttsResponse.arrayBuffer());
 
     // Generate subtitle chunks using the REAL name (not pronunciation)
+    // Use ttsWords for timing estimation (since TTS paces based on those words)
+    // but subWords for display text
     const subWords = subtitleText.split(' ');
     const ttsWords = processedText.split(' ');
     const chunkSize = 8;
+    const totalTtsWords = ttsWords.length;
+    const totalSubWords = subWords.length;
     const msPerWord = 400;
+    const totalDurationMs = totalTtsWords * msPerWord;
     const subtitles: Array<{ text: string; start: number; end: number }> = [];
 
-    for (let i = 0; i < subWords.length; i += chunkSize) {
+    // Map subtitle word indices to proportional TTS timing
+    // This handles cases where subWords and ttsWords have different lengths
+    // (e.g. name "Denisa" in subtitles vs "Deh ni sa" in TTS)
+    for (let i = 0; i < totalSubWords; i += chunkSize) {
       const chunk = subWords.slice(i, i + chunkSize).join(' ');
-      const startMs = i * msPerWord;
-      const endMs = Math.min((i + chunkSize) * msPerWord, ttsWords.length * msPerWord);
+      const chunkEnd = Math.min(i + chunkSize, totalSubWords);
+      // Map subtitle word position to proportional TTS position
+      const startFrac = i / totalSubWords;
+      const endFrac = chunkEnd / totalSubWords;
+      const startMs = startFrac * totalDurationMs;
+      const endMs = endFrac * totalDurationMs;
       subtitles.push({ text: chunk, start: startMs / 1000, end: endMs / 1000 });
     }
 
     return NextResponse.json({
       audio: audioBuffer.toString('base64'),
       subtitles,
-      duration: (ttsWords.length * msPerWord) / 1000,
+      duration: totalDurationMs / 1000,
       text: subtitleText,
     });
   } catch (err: unknown) {

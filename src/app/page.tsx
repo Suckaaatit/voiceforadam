@@ -39,6 +39,7 @@ export default function VoiceGeneratorPage() {
   const charCount = text.length;
   const charWarning = charCount > 500;
 
+  // Cleanup blob URLs on change and unmount
   useEffect(() => {
     return () => {
       if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -84,9 +85,11 @@ export default function VoiceGeneratorPage() {
       const url = URL.createObjectURL(audioBlob);
       setPreviewAudioUrl(url);
 
-      // Auto-play the preview
+      // Auto-play the preview (catch rejection if browser blocks autoplay)
       setTimeout(() => {
-        previewAudioRef.current?.play();
+        previewAudioRef.current?.play().catch(() => {
+          // Autoplay blocked — user can click the audio controls manually
+        });
       }, 100);
     } catch (err: unknown) {
       const message =
@@ -160,21 +163,28 @@ export default function VoiceGeneratorPage() {
 
     // Decode MP3 to full-quality PCM using Web Audio API
     const arrayBuffer = await audioBlob.arrayBuffer();
-    const audioCtx = new AudioContext();
-    // Ensure AudioContext is running (may be suspended after async calls)
+    // Use 48kHz — standard for video production, matches Opus/AAC encoder expectations
+    // Avoids unnecessary resampling inside MediaRecorder which degrades quality
+    const audioCtx = new AudioContext({ sampleRate: 48000 });
+
+    // Ensure AudioContext is running (can be suspended after async calls)
     if (audioCtx.state === "suspended") {
       await audioCtx.resume();
     }
+
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     const audioDuration = audioBuffer.duration;
 
+    // Deep-copy subtitles so we don't mutate the caller's array
+    const subs = subtitles.map((s) => ({ ...s }));
+
     // Rescale subtitle timings to match actual audio duration
-    if (subtitles.length > 0) {
-      const lastSub = subtitles[subtitles.length - 1];
+    if (subs.length > 0) {
+      const lastSub = subs[subs.length - 1];
       const estimatedDuration = lastSub.end;
       if (estimatedDuration > 0 && audioDuration > 0) {
         const scale = audioDuration / estimatedDuration;
-        for (const sub of subtitles) {
+        for (const sub of subs) {
           sub.start *= scale;
           sub.end *= scale;
         }
@@ -182,11 +192,17 @@ export default function VoiceGeneratorPage() {
     }
 
     // Play decoded PCM through AudioBufferSourceNode → recording stream
-    // This gives MediaRecorder pristine uncompressed audio to encode
     const sourceNode = audioCtx.createBufferSource();
     sourceNode.buffer = audioBuffer;
+
+    // Add a GainNode at unity (1.0) — this ensures the full dynamic range
+    // of the decoded audio passes through without any clipping or compression
+    const gainNode = audioCtx.createGain();
+    gainNode.gain.value = 1.0;
+
     const dest = audioCtx.createMediaStreamDestination();
-    sourceNode.connect(dest);
+    sourceNode.connect(gainNode);
+    gainNode.connect(dest);
 
     // Combine canvas video stream + audio stream
     const videoStream = canvas.captureStream(30);
@@ -212,7 +228,9 @@ export default function VoiceGeneratorPage() {
     const recorder = new MediaRecorder(combined, {
       mimeType,
       videoBitsPerSecond: 8_000_000,
-      audioBitsPerSecond: 256_000,
+      // Max audio quality — 320kbps is CD-quality for AAC/Opus
+      // This prevents MediaRecorder from compressing dynamics/enthusiasm
+      audioBitsPerSecond: 320_000,
     });
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => {
@@ -221,57 +239,74 @@ export default function VoiceGeneratorPage() {
 
     return new Promise((resolve, reject) => {
       let stopped = false;
+      let animFrameId = 0;
+
+      const cleanup = () => {
+        // Cancel any pending animation frame
+        if (animFrameId) cancelAnimationFrame(animFrameId);
+        // Stop all tracks (canvas + audio) to free resources
+        combined.getTracks().forEach((t) => t.stop());
+        // Close AudioContext
+        audioCtx.close().catch(() => {});
+      };
+
       const stopRecording = () => {
         if (stopped) return;
         stopped = true;
-        // Stop all tracks so MediaRecorder finalizes cleanly
-        combined.getTracks().forEach((t) => t.stop());
+        // IMPORTANT: Stop the recorder FIRST while tracks are still alive
+        // so it can finalize the codec container properly.
+        // Track cleanup happens in onstop after the blob is built.
         if (recorder.state === "recording") {
           recorder.stop();
+        } else {
+          // Recorder already stopped (e.g. browser auto-stopped it) — clean up
+          cleanup();
         }
       };
 
       recorder.onstop = () => {
+        cleanup();
         const blob = new Blob(chunks, { type: mimeType });
-        audioCtx.close();
         const format = mimeType.includes("mp4") ? "mp4" as const : "webm" as const;
         resolve({ blob, format });
       };
 
       recorder.onerror = () => {
-        audioCtx.close();
+        cleanup();
         reject(new Error("Video recording failed"));
       };
 
-      // Safety timeout — never hang forever, cap at audioDuration + 5s
+      // Safety timeout — cap at audioDuration + 5s (minimum 15s)
       const safetyMs = Math.max((audioDuration + 5) * 1000, 15_000);
       const safetyTimeout = setTimeout(() => {
         console.warn("Safety timeout reached, stopping recording");
         stopRecording();
       }, safetyMs);
 
-      // Stop when audio buffer finishes playing (most reliable signal)
+      // Stop when audio buffer finishes playing
       sourceNode.onended = () => {
-        // Give 0.3s buffer for final frames
+        // Tiny buffer (50ms) for final frame, then stop cleanly
         setTimeout(() => {
           clearTimeout(safetyTimeout);
           stopRecording();
-        }, 300);
+        }, 50);
       };
 
-      recorder.start(100);
-      // Record the AudioContext time when we start, so elapsed is on the AUDIO clock
+      // Start recording — NO timeslice for clean single-chunk codec output
+      recorder.start();
+
+      // Track time on the AUDIO clock so subtitles are perfectly synced
       const audioStartTime = audioCtx.currentTime;
       sourceNode.start(0);
 
       const drawFrame = () => {
         if (stopped) return;
-        // Use audioCtx.currentTime (audio clock) NOT performance.now() (wall clock)
-        // This keeps subtitles perfectly synced with audio, even if there's latency
+
+        // Use audio clock, not wall clock — prevents desync from latency/suspension
         const elapsed = audioCtx.currentTime - audioStartTime;
 
-        // Hard-stop if we've gone past the audio duration (prevents runaway recording)
-        if (elapsed > audioDuration + 0.5) {
+        // Hard-stop if past audio duration (prevents runaway frames)
+        if (elapsed > audioDuration + 0.3) {
           clearTimeout(safetyTimeout);
           stopRecording();
           return;
@@ -282,7 +317,7 @@ export default function VoiceGeneratorPage() {
         ctx.fillRect(0, 0, 1080, 1080);
 
         if (showSubs) {
-          const currentSub = subtitles.find(
+          const currentSub = subs.find(
             (s) => elapsed >= s.start && elapsed < s.end
           );
           if (currentSub) {
@@ -311,16 +346,18 @@ export default function VoiceGeneratorPage() {
             const startY = 540 - (lines.length * lineHeight) / 2;
 
             lines.forEach((line, i) => {
+              // Text shadow for readability
               ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
               ctx.font = "600 36px Arial, sans-serif";
               ctx.fillText(line, 542, startY + i * lineHeight + 2);
+              // White text
               ctx.fillStyle = "#ffffff";
               ctx.fillText(line, 540, startY + i * lineHeight);
             });
           }
         }
 
-        requestAnimationFrame(drawFrame);
+        animFrameId = requestAnimationFrame(drawFrame);
       };
 
       drawFrame();
@@ -339,7 +376,9 @@ export default function VoiceGeneratorPage() {
 
   const handleReset = () => {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
+    if (previewAudioUrl) URL.revokeObjectURL(previewAudioUrl);
     setVideoUrl(null);
+    setPreviewAudioUrl(null);
     setError(null);
     setStatus("");
   };
@@ -768,7 +807,7 @@ export default function VoiceGeneratorPage() {
                     d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
                   />
                 </svg>
-                Download MP4
+                Download {videoFormat.toUpperCase()}
               </button>
               <button
                 onClick={handleReset}
