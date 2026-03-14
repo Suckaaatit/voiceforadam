@@ -1,5 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Deterministic hash — same input always produces same seed
+// WHY: Without a seed, Fish Audio uses random sampling each call, so
+// hitting Preview 10 times on identical text gives 10 different outputs.
+// With a seed derived from the text, same text = same audio every time.
+// Change one word → new hash → fresh generation.
+function hashCode(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0; // Convert to 32-bit integer
+  }
+  return Math.abs(hash);
+}
+
 const FISH_API_KEY = process.env.FISH_AUDIO_API_KEY || '';
 const ADAM_VOICE_ID = process.env.FISH_AUDIO_VOICE_ID || '';
 
@@ -67,12 +82,18 @@ export async function POST(req: NextRequest) {
         format: 'mp3',
         // WHY 320: Maximum MP3 quality — preserves dynamics and clarity
         mp3_bitrate: 320,
-        // WHY 0.5: Default is 0.7. Lower temp = more predictable, consistent tone
-        // across different text sentiments. Still high enough to avoid robotic delivery.
-        temperature: 0.5,
-        // WHY 0.6: Works with temperature to constrain emotional variance.
-        // Together they prevent the clone from randomly sounding depressed vs excited.
+        // WHY 0.2: Very low temp = highly consistent tone every time.
+        // Default is 0.7 which causes wild swings (depressed vs excited).
+        // If 0.2 sounds too robotic, bump to 0.3 but stay below 0.4.
+        temperature: 0.2,
+        // WHY 0.6: Tight sampling — no wild variations in prosody/emotion.
         top_p: 0.6,
+        // WHY 1.2: Prevents monotone/depressed sound by penalizing repeated patterns.
+        repetition_penalty: 1.2,
+        // WHY seed: Same text = same audio every time. No more "3 previews = 3 different outputs".
+        // hashCode produces a deterministic 32-bit int from the text, so changing one word
+        // gives a fresh seed and fresh generation, but same text is always identical.
+        seed: hashCode(ttsText),
       }),
     });
 
