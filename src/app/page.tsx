@@ -163,14 +163,12 @@ export default function VoiceGeneratorPage() {
 
     // Decode MP3 to full-quality PCM using Web Audio API
     const arrayBuffer = await audioBlob.arrayBuffer();
-    // Use 48kHz — standard for video production, matches Opus/AAC encoder expectations
-    // Avoids unnecessary resampling inside MediaRecorder which degrades quality
-    const audioCtx = new AudioContext({ sampleRate: 48000 });
+    // Use browser's default sample rate — forced rates (e.g. 48kHz) can fail
+    // on some devices/browsers and cause silent hangs
+    const audioCtx = new AudioContext();
 
     // Ensure AudioContext is running (can be suspended after async calls)
-    if (audioCtx.state === "suspended") {
-      await audioCtx.resume();
-    }
+    await audioCtx.resume();
 
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     const audioDuration = audioBuffer.duration;
@@ -276,37 +274,50 @@ export default function VoiceGeneratorPage() {
         reject(new Error("Video recording failed"));
       };
 
-      // Safety timeout — cap at audioDuration + 5s (minimum 15s)
-      const safetyMs = Math.max((audioDuration + 5) * 1000, 15_000);
+      // Wall-clock safety timeout — this ALWAYS fires regardless of AudioContext state
+      // Prevents infinite hang if AudioContext freezes, suspends, or bugs out
+      const safetyMs = Math.max((audioDuration + 3) * 1000, 10_000);
       const safetyTimeout = setTimeout(() => {
-        console.warn("Safety timeout reached, stopping recording");
+        console.warn("Wall-clock safety timeout reached, forcing stop");
         stopRecording();
       }, safetyMs);
 
-      // Stop when audio buffer finishes playing
+      // Stop when audio buffer finishes playing (primary stop signal)
       sourceNode.onended = () => {
-        // Tiny buffer (50ms) for final frame, then stop cleanly
         setTimeout(() => {
           clearTimeout(safetyTimeout);
           stopRecording();
         }, 50);
       };
 
+      // Auto-resume AudioContext if browser suspends it (tab switch, throttling)
+      audioCtx.addEventListener("statechange", () => {
+        if (!stopped && audioCtx.state === "suspended") {
+          audioCtx.resume().catch(() => {});
+        }
+      });
+
       // Start recording — NO timeslice for clean single-chunk codec output
       recorder.start();
 
-      // Track time on the AUDIO clock so subtitles are perfectly synced
+      // Ensure context is definitely running right before playback starts
+      audioCtx.resume().catch(() => {});
       const audioStartTime = audioCtx.currentTime;
+      const wallStartTime = performance.now();
       sourceNode.start(0);
 
       const drawFrame = () => {
         if (stopped) return;
 
-        // Use audio clock, not wall clock — prevents desync from latency/suspension
+        // Use audio clock for subtitle sync (accurate to audio playback)
         const elapsed = audioCtx.currentTime - audioStartTime;
 
-        // Hard-stop if past audio duration (prevents runaway frames)
-        if (elapsed > audioDuration + 0.3) {
+        // Wall-clock elapsed as backup — if AudioContext freezes, this still advances
+        const wallElapsed = (performance.now() - wallStartTime) / 1000;
+
+        // Hard-stop: use whichever clock is further ahead
+        // This guarantees we ALWAYS stop, even if AudioContext is frozen
+        if (elapsed > audioDuration + 0.3 || wallElapsed > audioDuration + 2) {
           clearTimeout(safetyTimeout);
           stopRecording();
           return;

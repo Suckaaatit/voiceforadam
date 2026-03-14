@@ -20,12 +20,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // For subtitles: use the real name
+    // For subtitles: use the real name (what viewers see)
     const subtitleText = text.trim().replace(/\{first_name\}/gi, first_name || 'there');
-    // For TTS: use the pronunciation hint if provided, otherwise use the real name
-    // Convert hyphens to spaces so TTS reads syllables naturally (e.g. "Deh-ni-sa" → "Deh ni sa")
+    // For TTS: use pronunciation hint as-is if provided
+    // speech-1.5 model handles hyphens naturally (e.g. "Deh-ni-sa" reads as flowing syllables)
+    // Don't split hyphens into spaces — that makes TTS read them as separate words
     const rawPronunciation = (name_pronunciation && name_pronunciation.trim()) ? name_pronunciation.trim() : '';
-    const ttsName = rawPronunciation ? rawPronunciation.replace(/-/g, ' ') : (first_name || 'there');
+    const ttsName = rawPronunciation || (first_name || 'there');
     const processedText = text.trim().replace(/\{first_name\}/gi, ttsName);
 
     const ttsResponse = await fetch('https://api.fish.audio/v1/tts', {
