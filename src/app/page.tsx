@@ -73,8 +73,9 @@ export default function VoiceGeneratorPage() {
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Voice generation failed");
+        let errMsg = "Voice generation failed";
+        try { const errBody = await res.json(); errMsg = errBody.error || errMsg; } catch { /* non-JSON response */ }
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
@@ -119,8 +120,9 @@ export default function VoiceGeneratorPage() {
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Voice generation failed");
+        let errMsg = "Voice generation failed";
+        try { const errBody = await res.json(); errMsg = errBody.error || errMsg; } catch { /* non-JSON response */ }
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
@@ -262,18 +264,6 @@ export default function VoiceGeneratorPage() {
         }
       };
 
-      recorder.onstop = () => {
-        cleanup();
-        const blob = new Blob(chunks, { type: mimeType });
-        const format = mimeType.includes("mp4") ? "mp4" as const : "webm" as const;
-        resolve({ blob, format });
-      };
-
-      recorder.onerror = () => {
-        cleanup();
-        reject(new Error("Video recording failed"));
-      };
-
       // Wall-clock safety timeout — this ALWAYS fires regardless of AudioContext state
       // Prevents infinite hang if AudioContext freezes, suspends, or bugs out
       const safetyMs = Math.max((audioDuration + 3) * 1000, 10_000);
@@ -281,6 +271,20 @@ export default function VoiceGeneratorPage() {
         console.warn("Wall-clock safety timeout reached, forcing stop");
         stopRecording();
       }, safetyMs);
+
+      recorder.onstop = () => {
+        clearTimeout(safetyTimeout);
+        cleanup();
+        const blob = new Blob(chunks, { type: mimeType });
+        const format = mimeType.includes("mp4") ? "mp4" as const : "webm" as const;
+        resolve({ blob, format });
+      };
+
+      recorder.onerror = () => {
+        clearTimeout(safetyTimeout);
+        cleanup();
+        reject(new Error("Video recording failed"));
+      };
 
       // Stop when audio buffer finishes playing (primary stop signal)
       sourceNode.onended = () => {
