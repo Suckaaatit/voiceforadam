@@ -46,6 +46,12 @@ export async function POST(req: NextRequest) {
     const ttsName = rawPronunciation || (first_name || 'there');
     const processedText = text.trim().replace(/\{first_name\}/gi, ttsName);
 
+    // WHY emotion anchor: Without this, the model infers tone from text sentiment alone,
+    // causing "Hey John!" to sound happy but "I know budgets are tight" to sound depressed.
+    // (confident) anchors the clone to an upbeat-but-professional tone for every generation.
+    // Only applied to TTS input — NOT added to subtitleText so it never appears on screen.
+    const ttsText = `(confident) ${processedText}`;
+
     // --- Fish Audio TTS API call ---
     const ttsResponse = await fetch('https://api.fish.audio/v1/tts', {
       method: 'POST',
@@ -56,11 +62,17 @@ export async function POST(req: NextRequest) {
         'model': 'speech-1.5',
       },
       body: JSON.stringify({
-        text: processedText,
+        text: ttsText,
         reference_id: ADAM_VOICE_ID,
         format: 'mp3',
         // WHY 320: Maximum MP3 quality — preserves dynamics and clarity
         mp3_bitrate: 320,
+        // WHY 0.5: Default is 0.7. Lower temp = more predictable, consistent tone
+        // across different text sentiments. Still high enough to avoid robotic delivery.
+        temperature: 0.5,
+        // WHY 0.6: Works with temperature to constrain emotional variance.
+        // Together they prevent the clone from randomly sounding depressed vs excited.
+        top_p: 0.6,
       }),
     });
 
