@@ -28,6 +28,7 @@ export default function VoiceGeneratorPage() {
   const [previewing, setPreviewing] = useState(false);
   const [status, setStatus] = useState("");
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoFormat, setVideoFormat] = useState<"mp4" | "webm">("mp4");
   const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [includeSubtitles, setIncludeSubtitles] = useState(true);
@@ -43,6 +44,12 @@ export default function VoiceGeneratorPage() {
       if (videoUrl) URL.revokeObjectURL(videoUrl);
     };
   }, [videoUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (previewAudioUrl) URL.revokeObjectURL(previewAudioUrl);
+    };
+  }, [previewAudioUrl]);
 
   const handlePreviewAudio = async () => {
     if (!text.trim()) return;
@@ -121,7 +128,7 @@ export default function VoiceGeneratorPage() {
       );
       const audioBlob = new Blob([audioBytes], { type: "audio/mpeg" });
 
-      const finalBlob = await createVideo(
+      const { blob: finalBlob, format } = await createVideo(
         audioBlob,
         data.subtitles,
         includeSubtitles
@@ -129,6 +136,7 @@ export default function VoiceGeneratorPage() {
 
       const url = URL.createObjectURL(finalBlob);
       setVideoUrl(url);
+      setVideoFormat(format);
       setStatus("Done!");
     } catch (err: unknown) {
       const message =
@@ -144,7 +152,7 @@ export default function VoiceGeneratorPage() {
     audioBlob: Blob,
     subtitles: SubtitleChunk[],
     showSubs: boolean
-  ): Promise<Blob> => {
+  ): Promise<{ blob: Blob; format: "mp4" | "webm" }> => {
     const canvas = document.createElement("canvas");
     canvas.width = 1080;
     canvas.height = 1080;
@@ -160,6 +168,7 @@ export default function VoiceGeneratorPage() {
           if (audio.duration && isFinite(audio.duration)) {
             resolve(audio.duration);
           } else {
+            // Some browsers return Infinity for blob URLs — seek to force calculation
             audio.currentTime = 1e10;
             audio.addEventListener(
               "seeked",
@@ -173,8 +182,17 @@ export default function VoiceGeneratorPage() {
       audio.load();
     });
 
+    // Wait for audio to seek back to start before recording
+    await new Promise<void>((resolve) => {
+      audio.currentTime = 0;
+      if (audio.currentTime === 0) {
+        resolve();
+      } else {
+        audio.addEventListener("seeked", () => resolve(), { once: true });
+      }
+    });
+
     // Rescale subtitle timings to match actual audio duration
-    // Server estimates 400ms/word but real TTS pacing varies
     if (subtitles.length > 0) {
       const lastSub = subtitles[subtitles.length - 1];
       const estimatedDuration = lastSub.end;
@@ -187,15 +205,11 @@ export default function VoiceGeneratorPage() {
       }
     }
 
-    // Reset audio to start
-    audio.currentTime = 0;
-
     // Set up AudioContext to route audio INTO the recording (not speakers)
     const audioCtx = new AudioContext();
     const source = audioCtx.createMediaElementSource(audio);
     const dest = audioCtx.createMediaStreamDestination();
     source.connect(dest);
-    // DO NOT connect to audioCtx.destination — no speaker output = no beeps
 
     // Combine canvas video stream + audio stream
     const videoStream = canvas.captureStream(30);
@@ -206,13 +220,10 @@ export default function VoiceGeneratorPage() {
 
     // Pick best available format — prefer MP4 (native on modern Chrome)
     let mimeType = "";
-    let fileExt = "webm";
     if (MediaRecorder.isTypeSupported("video/mp4;codecs=avc1.42E01E,mp4a.40.2")) {
       mimeType = "video/mp4;codecs=avc1.42E01E,mp4a.40.2";
-      fileExt = "mp4";
     } else if (MediaRecorder.isTypeSupported("video/mp4")) {
       mimeType = "video/mp4";
-      fileExt = "mp4";
     } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")) {
       mimeType = "video/webm;codecs=vp9,opus";
     } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")) {
@@ -230,19 +241,57 @@ export default function VoiceGeneratorPage() {
       if (e.data.size > 0) chunks.push(e.data);
     };
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      let stopped = false;
+      const stopRecording = () => {
+        if (stopped) return;
+        stopped = true;
+        if (recorder.state === "recording") {
+          recorder.stop();
+        }
+      };
+
       recorder.onstop = () => {
         const blob = new Blob(chunks, { type: mimeType });
         URL.revokeObjectURL(audioUrl);
         audioCtx.close();
-        resolve(blob);
+        const format = mimeType.includes("mp4") ? "mp4" as const : "webm" as const;
+        resolve({ blob, format });
       };
 
+      recorder.onerror = () => {
+        URL.revokeObjectURL(audioUrl);
+        audioCtx.close();
+        reject(new Error("Video recording failed"));
+      };
+
+      // Safety timeout — never hang forever (max 3 minutes)
+      const safetyTimeout = setTimeout(() => {
+        console.warn("Safety timeout reached, stopping recording");
+        stopRecording();
+      }, 180_000);
+
+      // Stop when audio actually ends (most reliable signal)
+      audio.addEventListener("ended", () => {
+        // Give 0.3s buffer for final frames
+        setTimeout(() => {
+          clearTimeout(safetyTimeout);
+          stopRecording();
+        }, 300);
+      }, { once: true });
+
       recorder.start(100);
-      audio.play();
+      audio.play().catch((err) => {
+        clearTimeout(safetyTimeout);
+        URL.revokeObjectURL(audioUrl);
+        audioCtx.close();
+        reject(new Error("Audio playback failed: " + err.message));
+      });
+
       const startTime = performance.now();
 
       const drawFrame = () => {
+        if (stopped) return;
         const elapsed = (performance.now() - startTime) / 1000;
 
         // Pitch black background
@@ -288,13 +337,7 @@ export default function VoiceGeneratorPage() {
           }
         }
 
-        if (elapsed < audioDuration + 0.5) {
-          requestAnimationFrame(drawFrame);
-        } else {
-          if (recorder.state === "recording") {
-            recorder.stop();
-          }
-        }
+        requestAnimationFrame(drawFrame);
       };
 
       drawFrame();
@@ -305,7 +348,7 @@ export default function VoiceGeneratorPage() {
     if (!videoUrl) return;
     const a = document.createElement("a");
     a.href = videoUrl;
-    a.download = `voice-message-${firstName || "video"}-${Date.now()}.mp4`;
+    a.download = `voice-message-${firstName || "video"}-${Date.now()}.${videoFormat}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
