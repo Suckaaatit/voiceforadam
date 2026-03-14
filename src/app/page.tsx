@@ -158,39 +158,11 @@ export default function VoiceGeneratorPage() {
     canvas.height = 1080;
     const ctx = canvas.getContext("2d")!;
 
-    // Get audio duration robustly
-    const audioUrl = URL.createObjectURL(audioBlob);
-    const audio = new Audio(audioUrl);
-    const audioDuration = await new Promise<number>((resolve) => {
-      audio.addEventListener(
-        "loadedmetadata",
-        () => {
-          if (audio.duration && isFinite(audio.duration)) {
-            resolve(audio.duration);
-          } else {
-            // Some browsers return Infinity for blob URLs — seek to force calculation
-            audio.currentTime = 1e10;
-            audio.addEventListener(
-              "seeked",
-              () => resolve(audio.duration),
-              { once: true }
-            );
-          }
-        },
-        { once: true }
-      );
-      audio.load();
-    });
-
-    // Wait for audio to seek back to start before recording
-    await new Promise<void>((resolve) => {
-      audio.currentTime = 0;
-      if (audio.currentTime === 0) {
-        resolve();
-      } else {
-        audio.addEventListener("seeked", () => resolve(), { once: true });
-      }
-    });
+    // Decode MP3 to full-quality PCM using Web Audio API
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const audioCtx = new AudioContext({ sampleRate: 44100 });
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    const audioDuration = audioBuffer.duration;
 
     // Rescale subtitle timings to match actual audio duration
     if (subtitles.length > 0) {
@@ -205,11 +177,12 @@ export default function VoiceGeneratorPage() {
       }
     }
 
-    // Set up AudioContext to route audio INTO the recording (not speakers)
-    const audioCtx = new AudioContext();
-    const source = audioCtx.createMediaElementSource(audio);
+    // Play decoded PCM through AudioBufferSourceNode → recording stream
+    // This gives MediaRecorder pristine uncompressed audio to encode
+    const sourceNode = audioCtx.createBufferSource();
+    sourceNode.buffer = audioBuffer;
     const dest = audioCtx.createMediaStreamDestination();
-    source.connect(dest);
+    sourceNode.connect(dest);
 
     // Combine canvas video stream + audio stream
     const videoStream = canvas.captureStream(30);
@@ -235,6 +208,7 @@ export default function VoiceGeneratorPage() {
     const recorder = new MediaRecorder(combined, {
       mimeType,
       videoBitsPerSecond: 8_000_000,
+      audioBitsPerSecond: 256_000,
     });
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => {
@@ -253,14 +227,12 @@ export default function VoiceGeneratorPage() {
 
       recorder.onstop = () => {
         const blob = new Blob(chunks, { type: mimeType });
-        URL.revokeObjectURL(audioUrl);
         audioCtx.close();
         const format = mimeType.includes("mp4") ? "mp4" as const : "webm" as const;
         resolve({ blob, format });
       };
 
       recorder.onerror = () => {
-        URL.revokeObjectURL(audioUrl);
         audioCtx.close();
         reject(new Error("Video recording failed"));
       };
@@ -271,22 +243,17 @@ export default function VoiceGeneratorPage() {
         stopRecording();
       }, 180_000);
 
-      // Stop when audio actually ends (most reliable signal)
-      audio.addEventListener("ended", () => {
+      // Stop when audio buffer finishes playing (most reliable signal)
+      sourceNode.onended = () => {
         // Give 0.3s buffer for final frames
         setTimeout(() => {
           clearTimeout(safetyTimeout);
           stopRecording();
         }, 300);
-      }, { once: true });
+      };
 
       recorder.start(100);
-      audio.play().catch((err) => {
-        clearTimeout(safetyTimeout);
-        URL.revokeObjectURL(audioUrl);
-        audioCtx.close();
-        reject(new Error("Audio playback failed: " + err.message));
-      });
+      sourceNode.start(0);
 
       const startTime = performance.now();
 
