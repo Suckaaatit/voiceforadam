@@ -160,7 +160,11 @@ export default function VoiceGeneratorPage() {
 
     // Decode MP3 to full-quality PCM using Web Audio API
     const arrayBuffer = await audioBlob.arrayBuffer();
-    const audioCtx = new AudioContext({ sampleRate: 44100 });
+    const audioCtx = new AudioContext();
+    // Ensure AudioContext is running (may be suspended after async calls)
+    if (audioCtx.state === "suspended") {
+      await audioCtx.resume();
+    }
     const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
     const audioDuration = audioBuffer.duration;
 
@@ -220,6 +224,8 @@ export default function VoiceGeneratorPage() {
       const stopRecording = () => {
         if (stopped) return;
         stopped = true;
+        // Stop all tracks so MediaRecorder finalizes cleanly
+        combined.getTracks().forEach((t) => t.stop());
         if (recorder.state === "recording") {
           recorder.stop();
         }
@@ -237,11 +243,12 @@ export default function VoiceGeneratorPage() {
         reject(new Error("Video recording failed"));
       };
 
-      // Safety timeout — never hang forever (max 3 minutes)
+      // Safety timeout — never hang forever, cap at audioDuration + 5s
+      const safetyMs = Math.max((audioDuration + 5) * 1000, 15_000);
       const safetyTimeout = setTimeout(() => {
         console.warn("Safety timeout reached, stopping recording");
         stopRecording();
-      }, 180_000);
+      }, safetyMs);
 
       // Stop when audio buffer finishes playing (most reliable signal)
       sourceNode.onended = () => {
@@ -253,13 +260,22 @@ export default function VoiceGeneratorPage() {
       };
 
       recorder.start(100);
+      // Record the AudioContext time when we start, so elapsed is on the AUDIO clock
+      const audioStartTime = audioCtx.currentTime;
       sourceNode.start(0);
-
-      const startTime = performance.now();
 
       const drawFrame = () => {
         if (stopped) return;
-        const elapsed = (performance.now() - startTime) / 1000;
+        // Use audioCtx.currentTime (audio clock) NOT performance.now() (wall clock)
+        // This keeps subtitles perfectly synced with audio, even if there's latency
+        const elapsed = audioCtx.currentTime - audioStartTime;
+
+        // Hard-stop if we've gone past the audio duration (prevents runaway recording)
+        if (elapsed > audioDuration + 0.5) {
+          clearTimeout(safetyTimeout);
+          stopRecording();
+          return;
+        }
 
         // Pitch black background
         ctx.fillStyle = "#000000";
