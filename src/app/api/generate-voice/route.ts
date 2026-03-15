@@ -10,6 +10,38 @@ export const maxDuration = 60;
 // degraded audio. Also prevents abuse/cost spikes.
 const MAX_TEXT_LENGTH = 5000;
 
+// --- Server-side LRU Cache ---
+// WHY: Same text previewed 10 times should call Fish Audio only ONCE.
+// Without cache, every preview hits the API = inconsistent audio + wasted credits.
+// Keyed on ttsText (includes pronunciation hint + emotion anchor).
+// Max 50 entries to prevent memory leak on Vercel serverless functions.
+interface CacheEntry {
+  audioBase64: string;
+  timestamp: number;
+}
+
+const MAX_CACHE_SIZE = 50;
+// WHY Map preserves insertion order — we use this for LRU eviction
+const ttsCache = new Map<string, CacheEntry>();
+
+function getCached(key: string): string | null {
+  const entry = ttsCache.get(key);
+  if (!entry) return null;
+  // WHY: Move to end of Map (most recently used) so LRU eviction works correctly
+  ttsCache.delete(key);
+  ttsCache.set(key, entry);
+  return entry.audioBase64;
+}
+
+function setCache(key: string, audioBase64: string): void {
+  // WHY: Evict oldest entry (first in Map) when at capacity
+  if (ttsCache.size >= MAX_CACHE_SIZE) {
+    const oldestKey = ttsCache.keys().next().value;
+    if (oldestKey !== undefined) ttsCache.delete(oldestKey);
+  }
+  ttsCache.set(key, { audioBase64, timestamp: Date.now() });
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { text, first_name, name_pronunciation } = await req.json();
@@ -52,48 +84,60 @@ export async function POST(req: NextRequest) {
     // Only applied to TTS input — NOT added to subtitleText so it never appears on screen.
     const ttsText = `(confident) ${processedText}`;
 
-    // --- Fish Audio TTS API call ---
-    const ttsResponse = await fetch('https://api.fish.audio/v1/tts', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${FISH_API_KEY}`,
-        'Content-Type': 'application/json',
-        // WHY header not body: Fish Audio API design — model is a request header
-        'model': 'speech-1.5',
-      },
-      body: JSON.stringify({
-        text: ttsText,
-        reference_id: ADAM_VOICE_ID,
-        format: 'mp3',
-        // WHY 320: Maximum MP3 quality — preserves dynamics and clarity
-        mp3_bitrate: 320,
-        temperature: 0.4,
-        top_p: 0.6,
-        repetition_penalty: 1.2,
-      }),
-    });
+    // --- Cache lookup ---
+    // WHY: Same ttsText = same audio. Check cache BEFORE calling Fish Audio API.
+    // Cache key includes voice ID so different clones don't collide.
+    const cacheKey = `${ADAM_VOICE_ID}:${ttsText}`;
+    let audioBase64 = getCached(cacheKey);
 
-    // --- Status-specific error handling ---
-    // WHY: Different errors need different client responses; never leak raw API internals
-    if (!ttsResponse.ok) {
-      const status = ttsResponse.status;
-      console.error('Fish Audio TTS failed:', status);
+    if (!audioBase64) {
+      // Cache miss — call Fish Audio API
+      const ttsResponse = await fetch('https://api.fish.audio/v1/tts', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${FISH_API_KEY}`,
+          'Content-Type': 'application/json',
+          // WHY header not body: Fish Audio API design — model is a request header
+          'model': 'speech-1.5',
+        },
+        body: JSON.stringify({
+          text: ttsText,
+          reference_id: ADAM_VOICE_ID,
+          format: 'mp3',
+          // WHY 320: Maximum MP3 quality — preserves dynamics and clarity
+          mp3_bitrate: 320,
+          temperature: 0.4,
+          top_p: 0.6,
+          repetition_penalty: 1.2,
+        }),
+      });
 
-      if (status === 401 || status === 403) {
-        return NextResponse.json({ error: 'Voice service authentication failed' }, { status: 500 });
+      // --- Status-specific error handling ---
+      // WHY: Different errors need different client responses; never leak raw API internals
+      if (!ttsResponse.ok) {
+        const status = ttsResponse.status;
+        console.error('Fish Audio TTS failed:', status);
+
+        if (status === 401 || status === 403) {
+          return NextResponse.json({ error: 'Voice service authentication failed' }, { status: 500 });
+        }
+        if (status === 429) {
+          return NextResponse.json({ error: 'Voice service is rate limited. Please wait a moment and try again.' }, { status: 429 });
+        }
+        if (status === 400) {
+          return NextResponse.json({ error: 'Voice generation request was invalid. Try shorter text.' }, { status: 400 });
+        }
+        // WHY: Don't leak raw Fish Audio error body — could contain internal URLs, keys, etc.
+        return NextResponse.json({ error: 'Voice generation service error. Please try again.' }, { status: 502 });
       }
-      if (status === 429) {
-        return NextResponse.json({ error: 'Voice service is rate limited. Please wait a moment and try again.' }, { status: 429 });
-      }
-      if (status === 400) {
-        return NextResponse.json({ error: 'Voice generation request was invalid. Try shorter text.' }, { status: 400 });
-      }
-      // WHY: Don't leak raw Fish Audio error body — could contain internal URLs, keys, etc.
-      return NextResponse.json({ error: 'Voice generation service error. Please try again.' }, { status: 502 });
+
+      // WHY arrayBuffer: Fish Audio returns raw binary MP3, not JSON
+      const audioBuffer = Buffer.from(await ttsResponse.arrayBuffer());
+      audioBase64 = audioBuffer.toString('base64');
+
+      // Store in cache for future identical requests
+      setCache(cacheKey, audioBase64);
     }
-
-    // WHY arrayBuffer: Fish Audio returns raw binary MP3, not JSON
-    const audioBuffer = Buffer.from(await ttsResponse.arrayBuffer());
 
     // --- Subtitle generation ---
     // WHY subWords for display, ttsWords for timing: pronunciation hint can change word count
@@ -124,7 +168,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       // WHY base64: Simplest binary transport in JSON; client decodes to Uint8Array
-      audio: audioBuffer.toString('base64'),
+      audio: audioBase64,
       subtitles,
       duration: totalDurationMs / 1000,
       // WHY subtitleText: Client shows this to user; uses real name, not pronunciation
