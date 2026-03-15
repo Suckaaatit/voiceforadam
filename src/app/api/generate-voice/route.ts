@@ -85,8 +85,9 @@ export async function POST(req: NextRequest) {
         // WHY 0.4: Balanced — natural and enthusiastic without wild mood swings.
         // Default 0.7 caused depressed vs excited randomness; 0.2 was too robotic.
         temperature: 0.4,
-        // WHY 0.6: Tight sampling — no wild variations in prosody/emotion.
-        top_p: 0.6,
+        // WHY 0.5: Tighter sampling — squeezes out remaining tonal variance.
+        // Was 0.6 but still getting ~2 versions; 0.5 narrows it further.
+        top_p: 0.5,
         // WHY 1.2: Prevents monotone/depressed sound by penalizing repeated patterns.
         repetition_penalty: 1.2,
         // WHY seed: Same text = same audio every time. No more "3 previews = 3 different outputs".
