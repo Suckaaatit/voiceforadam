@@ -1,20 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Deterministic hash — same input always produces same seed
-// WHY: Without a seed, Fish Audio uses random sampling each call, so
-// hitting Preview 10 times on identical text gives 10 different outputs.
-// With a seed derived from the text, same text = same audio every time.
-// Change one word → new hash → fresh generation.
-function hashCode(str: string): number {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0; // Convert to 32-bit integer
-  }
-  return Math.abs(hash);
-}
-
 const FISH_API_KEY = process.env.FISH_AUDIO_API_KEY || '';
 const ADAM_VOICE_ID = process.env.FISH_AUDIO_VOICE_ID || '';
 
@@ -82,17 +67,9 @@ export async function POST(req: NextRequest) {
         format: 'mp3',
         // WHY 320: Maximum MP3 quality — preserves dynamics and clarity
         mp3_bitrate: 320,
-        // WHY 0.4: Balanced — natural and enthusiastic without wild mood swings.
-        // Default 0.7 caused depressed vs excited randomness; 0.2 was too robotic.
         temperature: 0.4,
-        // WHY 0.6: Tight sampling — no wild variations in prosody/emotion.
         top_p: 0.6,
-        // WHY 1.2: Prevents monotone/depressed sound by penalizing repeated patterns.
         repetition_penalty: 1.2,
-        // WHY seed: Same text = same audio every time. No more "3 previews = 3 different outputs".
-        // hashCode produces a deterministic 32-bit int from the text, so changing one word
-        // gives a fresh seed and fresh generation, but same text is always identical.
-        seed: hashCode(ttsText),
       }),
     });
 
