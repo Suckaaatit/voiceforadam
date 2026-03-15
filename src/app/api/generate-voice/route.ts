@@ -82,10 +82,9 @@ export async function POST(req: NextRequest) {
         format: 'mp3',
         // WHY 320: Maximum MP3 quality — preserves dynamics and clarity
         mp3_bitrate: 320,
-        // WHY 0.2: Very low temp = highly consistent tone every time.
-        // Default is 0.7 which causes wild swings (depressed vs excited).
-        // If 0.2 sounds too robotic, bump to 0.3 but stay below 0.4.
-        temperature: 0.2,
+        // WHY 0.4: Balanced — natural and enthusiastic without wild mood swings.
+        // Default 0.7 caused depressed vs excited randomness; 0.2 was too robotic.
+        temperature: 0.4,
         // WHY 0.6: Tight sampling — no wild variations in prosody/emotion.
         top_p: 0.6,
         // WHY 1.2: Prevents monotone/depressed sound by penalizing repeated patterns.
