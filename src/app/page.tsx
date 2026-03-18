@@ -31,7 +31,7 @@ export default function VoiceGeneratorPage() {
   const [videoFormat, setVideoFormat] = useState<"mp4" | "webm">("mp4");
   const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [includeSubtitles, setIncludeSubtitles] = useState(true);
+  const [includeSubtitles, setIncludeSubtitles] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewAudioRef = useRef<HTMLAudioElement>(null);
 
